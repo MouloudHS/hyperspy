@@ -1184,11 +1184,16 @@ class BaseModel(list):
                 f"loss_function must be one of {_supported_losses} "
                 f"or callable, not '{loss_function}'"
             )
+        # Modified linecode: A warning was added to warn the user that GPUfit will be used
         elif loss_function != "ls" and optimizer in ["lm", "trf", "dogbox", "odr"]:
-            raise NotImplementedError(
+            if loss_function == "ML-poisson" and optimizer == "lm":
+                # Fitting will be done with GPUfit
+                warnings.warn("GPUfit will be used to fit model to data")
+            else:
+                raise NotImplementedError(
                 f"`optimizer='{optimizer}'` only supports "
                 "least-squares fitting (`loss_function='ls'`)"
-            )
+                )
 
         # Initialize print_info
         if print_info:
@@ -1269,74 +1274,126 @@ class BaseModel(list):
 
             args = (self.signal()[np.where(self.channel_switches)], weights)
 
+            # CXX1
             if optimizer == "lm":
-                if bounded:
-                    # Bounded Levenberg-Marquardt algorithm is supported
-                    # using the `mpfit` function (bundled with HyperSpy)
-                    self._set_mpfit_parameters_info(bounded=bounded)
+            	if bounded:
+            		if loss_function == "ML-poisson":
+		            	import pygpufit.gpufit as gf
+		                print("In progress")
 
-                    # We enforce estimation of the Jacobian if no
-                    # analytical gradients available for consistency
-                    # with `scipy.optimize.leastsq`
-                    auto_deriv = 0 if grad == "analytical" else 1
+		                # cuda available checks
+		                print('CUDA available: {}'.format(gf.cuda_available()))
 
-                    res = mpfit(
-                        self._errfunc4mpfit,
-                        self.p0[:],
-                        parinfo=self.mpfit_parinfo,
-                        functkw={
-                            "y": self.signal()[self.channel_switches],
-                            "weights": weights,
-                        },
-                        autoderivative=auto_deriv,
-                        quiet=1,
-                        **kwargs,
-                    )
+		                if not gf.cuda_available():
+		                	raise RuntimeError(gf.get_last_error())
+		                	print('CUDA versions runtime: {}, driver: {}'.format(*gf.get_cuda_version()))
 
-                    # Return as an OptimizeResult object
-                    self.fit_output = res.optimize_result
 
-                    self.p0 = self.fit_output.x
-                    ysize = len(self.fit_output.x) + self.fit_output.dof
-                    cost = self.fit_output.fnorm
-                    pcov = self.fit_output.perror ** 2
+                        else:
+		                # Bounded Levenberg-Marquardt algorithm is supported
+		                # using the `mpfit` function (bundled with HyperSpy)
+		                self._set_mpfit_parameters_info(bounded=bounded)
 
-                    # Calculate estimated parameter standard deviation
-                    self.p_std = self._calculate_parameter_std(pcov, cost, ysize)
+		                # We enforce estimation of the Jacobian if no
+		                # analytical gradients available for consistency
+		                # with `scipy.optimize.leastsq`
+		                auto_deriv = 0 if grad == "analytical" else 1
+
+		                res = mpfit(
+		                    self._errfunc4mpfit,
+		                    self.p0[:],
+		                    parinfo=self.mpfit_parinfo,
+		                    functkw={
+		                        "y": self.signal()[self.channel_switches],
+		                        "weights": weights,
+		                    },
+		                    autoderivative=auto_deriv,
+		                    quiet=1,
+		                    **kwargs,
+		                )
+
+		                # Return as an OptimizeResult object
+		                self.fit_output = res.optimize_result
+
+		                self.p0 = self.fit_output.x
+		                ysize = len(self.fit_output.x) + self.fit_output.dof
+		                cost = self.fit_output.fnorm
+		                pcov = self.fit_output.perror ** 2
+
+		                # Calculate estimated parameter standard deviation
+		                self.p_std = self._calculate_parameter_std(pcov, cost, ysize)
+
 
                 else:
-                    # Unbounded Levenberg-Marquardt algorithm is supported
-                    # using the `scipy.optimize.leastsq` function. Note that
-                    # Dfun=None means the gradient is always estimated here.
                     grad = self._jacobian if grad == "analytical" else None
 
-                    res = leastsq(
-                        self._errfunc,
-                        self.p0[:],
-                        Dfun=grad,
-                        col_deriv=1,
-                        args=args,
-                        full_output=True,
-                        **kwargs,
-                    )
+                    if loss_function = "ML-poisson":
+                    	import pygpufit.gpufit as gf
+                        print("In progress")
 
-                    self.fit_output = OptimizeResult(
-                        x=res[0],
-                        covar=res[1],
-                        fun=res[2]["fvec"],
-                        nfev=res[2]["nfev"],
-                        success=res[4] in [1, 2, 3, 4],
-                        status=res[4],
-                        message=res[3],
-                    )
+                        # cuda available checks
+                        print('CUDA available: {}'.format(gf.cuda_available()))
 
-                    self.p0 = self.fit_output.x
-                    ysize = len(self.fit_output.fun)
-                    cost = np.sum(self.fit_output.fun ** 2)
-                    pcov = self.fit_output.covar
+                        if not gf.cuda_available():
+                        	raise RuntimeError(gf.get_last_error())
+                        	print('CUDA versions runtime: {}, driver: {}'.format(*gf.get_cuda_version()))
 
-                    # Calculate estimated parameter standard deviation
-                    self.p_std = self._calculate_parameter_std(pcov, cost, ysize)
+                        res = gf.fit(self.signal()[self.channel_switches],
+                        None,
+                        model_id = gf.ModelID.Gauss1D,
+                        initial_parameters = self.p0[:],
+                        tolerance,
+                        max_number_iterations,
+                        None,
+                        estimator_id = gf.EstimatorID.MLE,
+                        None
+                        )
+
+	                # Return as an OptimizeResult object
+	                self.fit_output = res.optimize_result
+
+	                self.p0 = self.fit_output.x
+	                ysize = len(self.fit_output.x) + self.fit_output.dof
+	                cost = self.fit_output.fnorm
+	                pcov = self.fit_output.perror ** 2
+
+	                # Calculate estimated parameter standard deviation
+	                self.p_std = self._calculate_parameter_std(pcov, cost, ysize)
+
+
+                    else:
+                        # Unbounded Levenberg-Marquardt algorithm is supported
+                        # using the `scipy.optimize.leastsq` function. Note that
+                        # Dfun=None means the gradient is always estimated here.
+
+                        res = leastsq(
+                            self._errfunc,
+                            self.p0[:],
+                            Dfun=grad,
+                            col_deriv=1,
+                            args=args,
+                            full_output=True,
+                            **kwargs,
+                        )
+
+                        self.fit_output = OptimizeResult(
+                            x=res[0],
+                            covar=res[1],
+                            fun=res[2]["fvec"],
+                            nfev=res[2]["nfev"],
+                            success=res[4] in [1, 2, 3, 4],
+                            status=res[4],
+                            message=res[3],
+                        )
+
+                        self.p0 = self.fit_output.x
+                        ysize = len(self.fit_output.fun)
+                        cost = np.sum(self.fit_output.fun ** 2)
+                        pcov = self.fit_output.covar
+
+                        # Calculate estimated parameter standard deviation
+                        self.p_std = self._calculate_parameter_std(pcov, cost, ysize)
+
 
             elif optimizer in ["trf", "dogbox"]:
                 self._set_boundaries(bounded=bounded)
